@@ -1,0 +1,6 @@
+id=m3h-gesture-nav
+name=M3H 手势导航
+version=v1.0
+versionCode=1
+author=m3h
+description=为 M3H_ultra 安卓随身 WiFi 开发的全屏手势导航，替代原生虚拟按键。底部上滑=Home，上滑悬停=Recents，侧边滑动=Back。

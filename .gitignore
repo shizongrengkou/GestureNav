@@ -1,0 +1,15 @@
+# Build output
+buildtmp/
+*.idsig
+
+# IDE
+.idea/
+*.iml
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Keystore (keep debug keystore out of repo)
+*.keystore
