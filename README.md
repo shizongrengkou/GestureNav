@@ -2,6 +2,12 @@
 
 为 M3H_ultra 安卓随身 WiFi 开发的全屏手势导航应用，替代原生虚拟按键。
 
+> **⚠️ 免责声明**
+>
+> 本项目为个人开发的手势导航工具，**未经充分的兼容性和安全性测试**。Magisk 模块方案涉及系统级修改，可能存在未知风险（如开机异常、权限问题等），**刷入前请务必备份数据**。
+>
+> **推荐使用 ADB 直接安装 APK 的方式**，操作简单、风险可控、卸载方便。Magisk 模块仅作为进阶选项提供，不保证在所有设备和系统版本上正常工作。
+
 ## 功能
 
 | 手势 | 动作 |
@@ -47,7 +53,9 @@ adb shell settings put global policy_control "immersive.navigation=*"
 adb shell am start -n com.m3h.gesturenav/.MainActivity
 ```
 
-### 方式二：Magisk 模块
+### 方式二：Magisk 模块（⚠️ 未充分测试，谨慎使用）
+
+> **注意**：Magisk 模块方案未经充分验证，刷入前请备份数据。如遇问题可通过 Magisk 安全模式卸载模块。
 
 1. 将 `M3H-GestureNav-v1.0-Magisk.zip` 推送到设备
 2. Magisk App → 模块 → 从本地安装 → 选择 zip
