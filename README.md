@@ -8,6 +8,15 @@
 >
 > **推荐使用 ADB 直接安装 APK 的方式**，操作简单、风险可控、卸载方便。Magisk 模块仅作为进阶选项提供，不保证在所有设备和系统版本上正常工作。
 
+## 下载
+
+| 文件 | 说明 |
+|---|---|
+| [GestureNav.apk](./GestureNav.apk) | 预构建 APK，直接 `adb install` 即可 |
+| [M3H-GestureNav-v1.0-Magisk.zip](./M3H-GestureNav-v1.0-Magisk.zip) | Magisk 模块包（进阶，未充分测试） |
+
+> 若点击 APK 链接后看到乱码或直接打开了二进制内容，请右键「链接另存为」下载，或在上方 `Raw` 按钮上右键保存。GitHub 不会对仓库内的大文件做 CDN 加速，首次下载可能略慢。
+
 ## 功能
 
 | 手势 | 动作 |
@@ -19,7 +28,8 @@
 ## 特性
 
 - 原生风格白色透明箭头视觉反馈
-- 底部区域点击穿透，不影响桌面图标
+- **底部条仅占 14dp**，不遮挡第三方 App 的底部导航栏与图标（桌面与第三方应用内均可正常点击底部元素）
+- 手势方向预判：只有手指明确朝目标方向移动时才接管触摸，向下按压 / 横向拖动 / 静止点按均透传给底层 App
 - 开机无感自启
 - 密度自适应，适配不同分辨率设备
 - 触发时震动反馈
@@ -76,7 +86,9 @@ adb shell settings delete global policy_control
 ```
 GestureNav/
 ├── AndroidManifest.xml
-├── build.bat                         # 构建脚本
+├── build.bat                         # 构建脚本（CMD 版本）
+├── build.ps1                         # 构建脚本（PowerShell 版本，推荐）
+├── GestureNav.apk                    # 预构建 APK，可直接安装
 ├── res/
 │   ├── values/strings.xml
 │   └── xml/accessibility_service_config.xml
@@ -93,8 +105,8 @@ GestureNav/
 ## 技术说明
 
 - 无障碍服务调用 `performGlobalAction()` 实现 Home/Back/Recents
-- 三条独立窄 overlay（底部 + 左 + 右），中间屏幕不遮挡
-- 单击穿透：检测触摸距离和时长，短触传递给底层应用
+- 三条独立窄 overlay（底部 14dp + 左 8dp + 右 8dp），中间屏幕不遮挡
+- 方向预判接管：`ACTION_DOWN` 时静默观察，仅当手指明显朝目标方向（底部向上 / 侧边向内）移动才接管触摸并显示反馈；其余方向透传，避免误触和吞掉 App 的触摸事件
 - 视觉反馈：Canvas 绘制跟随手指的白色半透明箭头/横条
 - 开机自启：BOOT_COMPLETED → 透明 Trampoline → 前台服务
 

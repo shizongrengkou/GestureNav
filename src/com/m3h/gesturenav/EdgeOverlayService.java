@@ -162,6 +162,7 @@ public class EdgeOverlayService extends Service {
                     holdPhase = false; dispatched = false;
                     showFeedback = false; gestureTriggered = false;
                     swipeDistance = 0f;
+                    claimAccepted = false; // tentatively watching
                     return true;
 
                 case MotionEvent.ACTION_MOVE:
@@ -171,44 +172,68 @@ public class EdgeOverlayService extends Service {
                     long elapsed = evTime - downTime;
 
                     float moveDist = (float) Math.sqrt(dx * dx + dy * dy);
-                    if (moveDist < GestureConfig.dp(TAP_MAX_DIST_DP) && elapsed < TAP_MAX_DURATION_MS) {
-                        return true;
-                    }
 
+                    // Decide intent as early as possible. We only "claim" the touch
+                    // (show feedback / fire the gesture) once movement clearly
+                    // matches our direction. Anything else is ignored silently, so
+                    // taps on app content near the very edge don't produce stray
+                    // feedback.
                     if (edge == 0) {
-                        // Bottom: swipe up = home / hold = recents
-                        if (dy < 0) {
-                            swipeDistance = Math.abs(dy);
-                            showFeedback = true;
-                            progress = Math.min(1f, swipeDistance / GestureConfig.swipeUpMin());
+                        boolean upwardIntent = dy < -GestureConfig.dp(4f);
+                        boolean downwardIntent = dy > GestureConfig.dp(6f);
 
-                            if (!holdPhase && !dispatched && elapsed > GestureConfig.HOLD_TIME_MS
-                                && swipeDistance > GestureConfig.holdDist()
-                                && swipeDistance < GestureConfig.holdDist() + GestureConfig.dp(30f)) {
-                                holdPhase = true;
-                                gestureTriggered = true;
-                                engine.recents(); dispatched = true;
+                        if (!claimAccepted) {
+                            if (downwardIntent || (moveDist > GestureConfig.dp(14f) && !upwardIntent)) {
+                                // Not our gesture — stop watching quietly.
+                                tracking = false; hide();
+                                return false;
                             }
-                            invalidate();
-                        } else if (dy > GestureConfig.dp(10f)) {
-                            tracking = false; hide();
+                            if (upwardIntent && moveDist > GestureConfig.dp(4f)) {
+                                claimAccepted = true;
+                            } else {
+                                return true; // still ambiguous, keep watching
+                            }
                         }
+
+                        // We've claimed an upward swipe.
+                        swipeDistance = Math.abs(dy);
+                        showFeedback = true;
+                        progress = Math.min(1f, swipeDistance / GestureConfig.swipeUpMin());
+
+                        if (!holdPhase && !dispatched && elapsed > GestureConfig.HOLD_TIME_MS
+                            && swipeDistance > GestureConfig.holdDist()
+                            && swipeDistance < GestureConfig.holdDist() + GestureConfig.dp(30f)) {
+                            holdPhase = true;
+                            gestureTriggered = true;
+                            engine.recents(); dispatched = true;
+                        }
+                        invalidate();
                     } else {
-                        // Left / right: swipe inward = back
-                        float distIn = Math.abs(dx);
                         float dir = (edge == 1) ? dx : -dx;
-                        if (dir > 0 && !dispatched) {
-                            swipeDistance = distIn;
-                            showFeedback = true;
-                            progress = Math.min(1f, distIn / GestureConfig.sideSwipeMin());
-                            if (distIn > GestureConfig.sideSwipeMin()) {
-                                gestureTriggered = true;
-                                engine.back(); dispatched = true;
+                        float distIn = Math.abs(dx);
+                        boolean inwardIntent = dir > GestureConfig.dp(3f);
+                        boolean outwardIntent = dir < -GestureConfig.dp(5f);
+
+                        if (!claimAccepted) {
+                            if (outwardIntent || (moveDist > GestureConfig.dp(14f) && !inwardIntent)) {
+                                tracking = false; hide();
+                                return false;
                             }
-                            invalidate();
-                        } else if (dir < -GestureConfig.dp(8f)) {
-                            tracking = false; hide();
+                            if (inwardIntent && moveDist > GestureConfig.dp(3f)) {
+                                claimAccepted = true;
+                            } else {
+                                return true;
+                            }
                         }
+
+                        swipeDistance = distIn;
+                        showFeedback = true;
+                        progress = Math.min(1f, distIn / GestureConfig.sideSwipeMin());
+                        if (distIn > GestureConfig.sideSwipeMin()) {
+                            gestureTriggered = true;
+                            engine.back(); dispatched = true;
+                        }
+                        invalidate();
                     }
                     return true;
 
@@ -220,20 +245,14 @@ public class EdgeOverlayService extends Service {
                     long dur = evTime - downTime;
                     tracking = false;
 
-                    float totalDist = (float) Math.sqrt(ddx * ddx + ddy * ddy);
-                    if (totalDist < GestureConfig.dp(TAP_MAX_DIST_DP) && dur < TAP_MAX_DURATION_MS) {
-                        hide();
-                        return false; // tap passthrough
-                    }
-
-                    if (edge == 0 && !dispatched) {
+                    if (edge == 0 && !dispatched && claimAccepted) {
                         float dist = Math.abs(ddy);
-                        if (dist > GestureConfig.swipeUpMin() || ddy < -GestureConfig.dp(20f)) {
+                        if (dist > GestureConfig.swipeUpMin() || ddy < -GestureConfig.dp(18f)) {
                             gestureTriggered = true;
                             engine.home();
                         }
                     }
-                    if ((edge == 1 || edge == 2) && !dispatched) {
+                    if ((edge == 1 || edge == 2) && !dispatched && claimAccepted) {
                         float dist = Math.abs(ddx);
                         float dir = (edge == 1) ? ddx : -ddx;
                         if (dir > 0 && dist > GestureConfig.sideSwipeMin() * 0.7f) {
@@ -247,6 +266,7 @@ public class EdgeOverlayService extends Service {
                         postDelayed(() -> hide(), 250);
                     }
                     holdPhase = false; dispatched = false;
+                    claimAccepted = false;
                     return true;
 
                 default:
@@ -255,6 +275,8 @@ public class EdgeOverlayService extends Service {
         }
 
         private float progress = 0f;
+        // Whether we've committed to owning this pointer stream as a real gesture.
+        private boolean claimAccepted = false;
 
         private void hide() {
             showFeedback = false; progress = 0f; swipeDistance = 0f;

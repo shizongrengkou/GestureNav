@@ -2,16 +2,19 @@ package com.m3h.gesturenav;
 
 public class GestureConfig {
     // Edge trigger zones in dp
-    public static final int BOTTOM_EDGE_HEIGHT_DP = 48;
-    public static final int LEFT_EDGE_WIDTH_DP = 12;
-    public static final int RIGHT_EDGE_WIDTH_DP = 12;
+    // Bottom strip kept thin: only the very edge must capture the gesture so it
+    // doesn't sit on top of apps' bottom nav bars / tab bars / action icons.
+    // On the 0.75 density target 14dp ≈ 11px.
+    public static final int BOTTOM_EDGE_HEIGHT_DP = 14;
+    public static final int LEFT_EDGE_WIDTH_DP = 8;
+    public static final int RIGHT_EDGE_WIDTH_DP = 8;
 
     // Gesture thresholds
-    public static final float SWIPE_UP_THRESHOLD_DP = 32f;      // min distance for Home
-    public static final float SWIPE_HOLD_THRESHOLD_DP = 48f;    // distance before hold triggers Recents
-    public static final float HOLD_TIME_MS = 280f;              // pause at hold point to trigger Recents
-    public static final float SIDE_SWIPE_THRESHOLD_DP = 18f;    // min distance for Back
-    public static final float VELOCITY_THRESHOLD_DP_PER_MS = 0.6f; // min velocity for fast swipe
+    public static final float SWIPE_UP_THRESHOLD_DP = 24f;      // min distance for Home
+    public static final float SWIPE_HOLD_THRESHOLD_DP = 40f;   // distance before hold triggers Recents
+    public static final float HOLD_TIME_MS = 260f;             // pause at hold point to trigger Recents
+    public static final float SIDE_SWIPE_THRESHOLD_DP = 16f;   // min distance for Back
+    public static final float VELOCITY_THRESHOLD_DP_PER_MS = 0.55f; // min velocity for fast swipe
 
     // These get filled at runtime from display metrics
     public static float density = 1f;
