@@ -45,12 +45,20 @@
 
 ## 安装方式
 
-### 方式一：ADB 安装（推荐）
+> 🆕 **新手用户请看**：👉 **[小白安装教程（图文版）](./小白安装教程.md)** 👈
+>
+> 面向完全没用过命令行的用户，从下载、装 ADB、开 USB 调试到一键安装，全程图文手把手，约 10 分钟搞定。
 
-1. 手机连接电脑，开启 USB 调试
-2. 双击 `一键安装.bat`
-3. 等待终端显示「安装完成」
-4. 拔线使用
+### 方式一：ADB 一键安装（推荐）
+
+**最简单的流程：**
+
+1. 下载 [`GestureNav.apk`](./GestureNav.apk) 和 [`一键安装.bat`](./一键安装.bat)，放在**同一个文件夹**
+2. 电脑装好 ADB（[官方下载](https://developer.android.com/tools/releases/platform-tools)），随身WiFi 开启 **USB 调试**
+3. 数据线连上电脑，手机上点「允许 USB 调试」
+4. 双击 `一键安装.bat`，脚本自动完成安装 + 授权 + 启动
+
+> 完整图文步骤见 **[小白安装教程](./小白安装教程.md)**。
 
 或手动执行：
 
@@ -89,6 +97,10 @@ GestureNav/
 ├── build.bat                         # 构建脚本（CMD 版本）
 ├── build.ps1                         # 构建脚本（PowerShell 版本，推荐）
 ├── GestureNav.apk                    # 预构建 APK，可直接安装
+├── 一键安装.bat                       # 小白一键安装（Windows 双击运行）
+├── 一键卸载.bat                       # 一键卸载
+├── 小白安装教程.md                     # 🆕 图文版新手教程（推荐先看）
+├── 使用教程-ADB安装.md                 # ADB 命令行安装教程
 ├── res/
 │   ├── values/strings.xml
 │   └── xml/accessibility_service_config.xml
