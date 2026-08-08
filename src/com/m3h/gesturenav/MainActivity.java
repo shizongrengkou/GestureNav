@@ -108,13 +108,29 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:" + getPackageName()));
-            startActivityForResult(intent, 100);
+            startSettingsSafely(intent);
         }
     }
 
     private void openAccessibilitySettings() {
-        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-        startActivity(intent);
+        startSettingsSafely(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+    }
+
+    /**
+     * 定制 ROM 可能缺少对应的系统设置页，直接 startActivity 会抛
+     * ActivityNotFoundException 导致闪退。先解析再跳转，失败时提示用户。
+     */
+    private void startSettingsSafely(Intent intent) {
+        try {
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                startActivity(intent);
+            } else {
+                Toast.makeText(this, "此 ROM 没有对应的系统设置页", Toast.LENGTH_LONG).show();
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "无法打开系统设置: " + e.getClass().getSimpleName(),
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void toggleService() {

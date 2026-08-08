@@ -1,42 +1,77 @@
 package com.m3h.gesturenav;
 
-import android.accessibilityservice.AccessibilityService;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.graphics.PixelFormat;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
-import android.util.DisplayMetrics;
+import android.os.Looper;
+import android.os.Process;
+import android.provider.Settings;
 import android.util.Log;
-import android.view.Gravity;
-import android.view.MotionEvent;
-import android.view.View;
-import android.view.WindowManager;
 
+/**
+ * 前台服务：保持进程存活 + 常驻通知 + 手势健康看门狗。
+ *
+ * 手势条 overlay 窗口已迁移到 GestureAccessibilityService 中
+ * （使用 TYPE_ACCESSIBILITY_OVERLAY，免疫该 ROM 的 setHideNonSystemOverlays
+ * 强制隐藏机制）。本服务负责：
+ *   1. 前台通知（防止进程被回收，开机链路不变）
+ *   2. 看门狗：无障碍服务断开时记录事件、提示恢复通知、必要时自杀触发
+ *      系统重绑（START_STICKY 重启进程 → AccessibilityManagerService 自动重绑，
+ *      实测 kill -9 后 ~10s 内恢复）。
+ *
+ * 为什么需要看门狗：Android 11 对崩溃过的无障碍服务不自动重绑
+ * （防崩溃循环），一旦进程死亡且未被拉起，手势会静默失效。
+ */
 public class EdgeOverlayService extends Service {
     private static final String TAG = "GestureOverlay";
     private static final String CHANNEL_ID = "gesture_nav_channel";
     private static final int NOTIFICATION_ID = 2001;
+    private static final int RECOVERY_NOTIFICATION_ID = 2003;
+
+    // ── 看门狗参数 ──────────────────────────────────────────────────────────
+    private static final long WATCHDOG_INTERVAL_MS = 30_000;
+    /** 断开超过此时长才提示恢复通知（避免短暂重连抖动打扰） */
+    private static final long NOTIFY_AFTER_MS = 60_000;
+    /** 断开超过此时长且未被系统自动恢复，自杀触发重绑 */
+    private static final long AUTO_KILL_AFTER_MS = 120_000;
+    /** 自杀冷却：10 分钟内最多一次，防重启后仍断开导致无限循环 */
+    private static final long AUTO_KILL_COOLDOWN_MS = 600_000;
 
     private static EdgeOverlayService instance;
 
-    private WindowManager wm;
-    private GestureEngine engine;
-    private View bottomOverlay, leftOverlay, rightOverlay;
+    private final Handler watchdogHandler = new Handler(Looper.getMainLooper());
+    private long disconnectedSince = 0;
+    private long lastAutoKill = 0;
+    private boolean recoveryShown = false;
 
-    public static void onAccessibilityReady(AccessibilityService accService) {
-        if (instance != null && instance.engine == null) {
-            instance.engine = new GestureEngine(accService);
-            instance.startEdgeOverlays();
-            Log.i(TAG, "Gesture engine started (via accessibility callback)");
+    private final Runnable watchdog = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                checkAccessibilityHealth();
+            } catch (Exception e) {
+                Log.w(TAG, "watchdog tick failed: " + e);
+            }
+            watchdogHandler.postDelayed(this, WATCHDOG_INTERVAL_MS);
         }
+    };
+
+    public static EdgeOverlayService getInstance() { return instance; }
+
+    /** 无障碍服务连接成功：手势能力就绪（窗口与引擎已在无障碍服务侧建好） */
+    public static void onAccessibilityReady(android.accessibilityservice.AccessibilityService accService) {
+        Log.i(TAG, "Accessibility connected, gesture engine ready");
+    }
+
+    /** 无障碍服务断开（如设置页触发重建）：引擎会在重连时自动重建 */
+    public static void onAccessibilityDisconnected() {
+        Log.w(TAG, "Accessibility disconnected, waiting for reconnect");
     }
 
     @Override
@@ -44,316 +79,100 @@ public class EdgeOverlayService extends Service {
         super.onCreate();
         instance = this;
         startForeground(NOTIFICATION_ID, buildNotification());
-        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        CrashLogger.log(this, "EdgeOverlayService created");
+        watchdogHandler.postDelayed(watchdog, WATCHDOG_INTERVAL_MS);
 
-        DisplayMetrics dm = new DisplayMetrics();
-        wm.getDefaultDisplay().getRealMetrics(dm);
-        GestureConfig.density = dm.density;
-        GestureConfig.screenWidth = dm.widthPixels;
-        GestureConfig.screenHeight = dm.heightPixels;
-
-        Log.i(TAG, String.format("Screen: %dx%d, density=%.2f", dm.widthPixels, dm.heightPixels, dm.density));
+        // 若无障碍已先连接（开机时通常先于本服务），确认引擎状态
+        GestureAccessibilityService acc = GestureAccessibilityService.getInstance();
+        if (acc != null && acc.getEngine() != null) {
+            Log.i(TAG, "Gesture engine already running (from accessibility service)");
+        } else {
+            Log.w(TAG, "AccessibilityService not yet connected, waiting for callback");
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (engine == null) {
-            AccessibilityService accService = GestureAccessibilityService.getInstance();
-            if (accService != null) {
-                engine = new GestureEngine(accService);
-                startEdgeOverlays();
-                Log.i(TAG, "Gesture engine started");
-            } else {
-                Log.w(TAG, "AccessibilityService not yet connected, waiting for callback");
-            }
+        // 引擎生命周期由无障碍服务管理；这里仅确保前台状态
+        GestureAccessibilityService acc = GestureAccessibilityService.getInstance();
+        if (acc != null && acc.getEngine() != null) {
+            Log.i(TAG, "Engine alive (onStartCommand)");
+        } else {
+            Log.w(TAG, "Engine not ready yet (onStartCommand)");
         }
         return START_STICKY;
     }
 
-    private void startEdgeOverlays() {
-        int bw = GestureConfig.bottomEdgePx();
-        int lw = GestureConfig.leftEdgePx();
-        int rw = GestureConfig.rightEdgePx();
-        int sw = GestureConfig.screenWidth;
-        int sh = GestureConfig.screenHeight;
+    // ── 看门狗 ──────────────────────────────────────────────────────────────
+    private void checkAccessibilityHealth() {
+        GestureAccessibilityService acc = GestureAccessibilityService.getInstance();
+        boolean ok = acc != null && acc.getEngine() != null;
+        long now = System.currentTimeMillis();
 
-        int baseFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                      | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                      | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+        if (ok) {
+            if (disconnectedSince != 0) {
+                CrashLogger.log(this, "Accessibility reconnected after "
+                        + (now - disconnectedSince) + "ms");
+            }
+            disconnectedSince = 0;
+            if (recoveryShown) {
+                getNotificationManager().cancel(RECOVERY_NOTIFICATION_ID);
+                recoveryShown = false;
+            }
+            return;
+        }
 
-        int overlayType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_PHONE;
+        // 断开。先确认用户没有在系统设置里主动关闭无障碍
+        if (disconnectedSince == 0) disconnectedSince = now;
+        long elapsed = now - disconnectedSince;
+        boolean enabledInSettings = isAccessibilityEnabledInSettings();
+        CrashLogger.log(this, "Accessibility disconnected " + elapsed
+                + "ms, settingsEnabled=" + enabledInSettings);
 
-        WindowManager.LayoutParams bp = new WindowManager.LayoutParams(sw, bw, overlayType, baseFlags, PixelFormat.TRANSLUCENT);
-        bp.gravity = Gravity.BOTTOM | Gravity.START;
-        bottomOverlay = new EdgeStripView(this, 0);
-        ((EdgeStripView) bottomOverlay).bindEngine(engine);
-        wm.addView(bottomOverlay, bp);
+        if (!enabledInSettings) {
+            // 用户主动关闭：不打扰、不自救
+            if (recoveryShown) {
+                getNotificationManager().cancel(RECOVERY_NOTIFICATION_ID);
+                recoveryShown = false;
+            }
+            return;
+        }
 
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(lw, sh, overlayType, baseFlags, PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.LEFT | Gravity.TOP;
-        leftOverlay = new EdgeStripView(this, 1);
-        ((EdgeStripView) leftOverlay).bindEngine(engine);
-        wm.addView(leftOverlay, lp);
+        if (elapsed >= NOTIFY_AFTER_MS && !recoveryShown) {
+            recoveryShown = true;
+            getNotificationManager().notify(RECOVERY_NOTIFICATION_ID,
+                    buildRecoveryNotification());
+            CrashLogger.log(this, "Recovery notification shown");
+        }
 
-        WindowManager.LayoutParams rp = new WindowManager.LayoutParams(rw, sh, overlayType, baseFlags, PixelFormat.TRANSLUCENT);
-        rp.gravity = Gravity.RIGHT | Gravity.TOP;
-        rightOverlay = new EdgeStripView(this, 2);
-        ((EdgeStripView) rightOverlay).bindEngine(engine);
-        wm.addView(rightOverlay, rp);
-
-        Log.i(TAG, String.format("Edge strips: bottom=%dpx left=%dpx right=%dpx", bw, lw, rw));
+        if (elapsed >= AUTO_KILL_AFTER_MS && now - lastAutoKill > AUTO_KILL_COOLDOWN_MS) {
+            lastAutoKill = now;
+            CrashLogger.log(this, "Auto-heal: killing own process to force rebind");
+            // 自杀后系统按 START_STICKY 重启本服务，同时 AccessibilityManagerService
+            // 会重新绑定无障碍服务（实测 ~10s 内完成）
+            Process.killProcess(Process.myPid());
+        }
     }
 
-    // ── Edge strip with finger-following arrow feedback ──────────────────────
-    private static class EdgeStripView extends View {
-        private final int edge; // 0=bottom, 1=left, 2=right
-        private GestureEngine engine;
-        private float startRawX, startRawY;
-        private long downTime;
-        private boolean tracking, holdPhase, dispatched;
-
-        // Tap detection
-        private static final float TAP_MAX_DIST_DP = 10f;
-        private static final long TAP_MAX_DURATION_MS = 200;
-
-        // Feedback state
-        private boolean showFeedback = false;
-        private boolean gestureTriggered = false;
-        private float fingerX, fingerY;      // finger position in this view's coords
-        private float swipeDistance = 0f;     // how far the finger has moved
-
-        // Drawing
-        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        // Colors — pure white, no tint
-        private static final int ARROW_COLOR = 0x99FFFFFF;   // 60% white
-
-        EdgeStripView(Context ctx, int edge) {
-            super(ctx);
-            this.edge = edge;
-            setBackgroundColor(0x00000000);
-
-            linePaint.setStyle(Paint.Style.STROKE);
-            linePaint.setStrokeCap(Paint.Cap.ROUND);
-        }
-
-        void bindEngine(GestureEngine e) { this.engine = e; }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            if (engine == null) return false;
-            float rx = event.getRawX();
-            float ry = event.getRawY();
-            long evTime = event.getEventTime();
-
-            // Convert to view-local coordinates
-            int[] loc = new int[2];
-            getLocationOnScreen(loc);
-            fingerX = rx - loc[0];
-            fingerY = ry - loc[1];
-
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    startRawX = rx; startRawY = ry;
-                    downTime = evTime; tracking = true;
-                    holdPhase = false; dispatched = false;
-                    showFeedback = false; gestureTriggered = false;
-                    swipeDistance = 0f;
-                    claimAccepted = false; // tentatively watching
-                    return true;
-
-                case MotionEvent.ACTION_MOVE:
-                    if (!tracking) return false;
-                    float dx = rx - startRawX;
-                    float dy = ry - startRawY;
-                    long elapsed = evTime - downTime;
-
-                    float moveDist = (float) Math.sqrt(dx * dx + dy * dy);
-
-                    // Decide intent as early as possible. We only "claim" the touch
-                    // (show feedback / fire the gesture) once movement clearly
-                    // matches our direction. Anything else is ignored silently, so
-                    // taps on app content near the very edge don't produce stray
-                    // feedback.
-                    if (edge == 0) {
-                        boolean upwardIntent = dy < -GestureConfig.dp(4f);
-                        boolean downwardIntent = dy > GestureConfig.dp(6f);
-
-                        if (!claimAccepted) {
-                            if (downwardIntent || (moveDist > GestureConfig.dp(14f) && !upwardIntent)) {
-                                // Not our gesture — stop watching quietly.
-                                tracking = false; hide();
-                                return false;
-                            }
-                            if (upwardIntent && moveDist > GestureConfig.dp(4f)) {
-                                claimAccepted = true;
-                            } else {
-                                return true; // still ambiguous, keep watching
-                            }
-                        }
-
-                        // We've claimed an upward swipe.
-                        swipeDistance = Math.abs(dy);
-                        showFeedback = true;
-                        progress = Math.min(1f, swipeDistance / GestureConfig.swipeUpMin());
-
-                        if (!holdPhase && !dispatched && elapsed > GestureConfig.HOLD_TIME_MS
-                            && swipeDistance > GestureConfig.holdDist()
-                            && swipeDistance < GestureConfig.holdDist() + GestureConfig.dp(30f)) {
-                            holdPhase = true;
-                            gestureTriggered = true;
-                            engine.recents(); dispatched = true;
-                        }
-                        invalidate();
-                    } else {
-                        float dir = (edge == 1) ? dx : -dx;
-                        float distIn = Math.abs(dx);
-                        boolean inwardIntent = dir > GestureConfig.dp(3f);
-                        boolean outwardIntent = dir < -GestureConfig.dp(5f);
-
-                        if (!claimAccepted) {
-                            if (outwardIntent || (moveDist > GestureConfig.dp(14f) && !inwardIntent)) {
-                                tracking = false; hide();
-                                return false;
-                            }
-                            if (inwardIntent && moveDist > GestureConfig.dp(3f)) {
-                                claimAccepted = true;
-                            } else {
-                                return true;
-                            }
-                        }
-
-                        swipeDistance = distIn;
-                        showFeedback = true;
-                        progress = Math.min(1f, distIn / GestureConfig.sideSwipeMin());
-                        if (distIn > GestureConfig.sideSwipeMin()) {
-                            gestureTriggered = true;
-                            engine.back(); dispatched = true;
-                        }
-                        invalidate();
-                    }
-                    return true;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (!tracking) return false;
-                    float ddx = rx - startRawX;
-                    float ddy = ry - startRawY;
-                    long dur = evTime - downTime;
-                    tracking = false;
-
-                    if (edge == 0 && !dispatched && claimAccepted) {
-                        float dist = Math.abs(ddy);
-                        if (dist > GestureConfig.swipeUpMin() || ddy < -GestureConfig.dp(18f)) {
-                            gestureTriggered = true;
-                            engine.home();
-                        }
-                    }
-                    if ((edge == 1 || edge == 2) && !dispatched && claimAccepted) {
-                        float dist = Math.abs(ddx);
-                        float dir = (edge == 1) ? ddx : -ddx;
-                        if (dir > 0 && dist > GestureConfig.sideSwipeMin() * 0.7f) {
-                            gestureTriggered = true;
-                            engine.back();
-                        }
-                    }
-
-                    // Fade out
-                    if (showFeedback) {
-                        postDelayed(() -> hide(), 250);
-                    }
-                    holdPhase = false; dispatched = false;
-                    claimAccepted = false;
-                    return true;
-
-                default:
-                    return false;
-            }
-        }
-
-        private float progress = 0f;
-        // Whether we've committed to owning this pointer stream as a real gesture.
-        private boolean claimAccepted = false;
-
-        private void hide() {
-            showFeedback = false; progress = 0f; swipeDistance = 0f;
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            if (!showFeedback || progress <= 0f) return;
-
-            int w = getWidth();
-            int h = getHeight();
-            float p = Math.min(1f, progress);
-
-            if (edge == 0) {
-                drawBottomPill(canvas, w, h, p);
-            } else if (edge == 1) {
-                drawSideArrow(canvas, w, h, p, true);
-            } else {
-                drawSideArrow(canvas, w, h, p, false);
-            }
-        }
-
-        // ── Bottom: thin pill that follows finger upward ─────────────────────
-        private void drawBottomPill(Canvas canvas, int w, int h, float p) {
-            float pillW = w * 0.28f;
-            float pillH = GestureConfig.dp(3f);
-            float pillY = Math.max(pillH, Math.min(h - pillH, fingerY));
-            float pillX = (w - pillW) / 2f;
-
-            // Alpha fades with progress
-            int alpha = (int)(180 * p);
-
-            linePaint.setColor(0xFFFFFF);
-            linePaint.setAlpha(alpha);
-            linePaint.setStrokeWidth(pillH);
-            canvas.drawRoundRect(
-                pillX, pillY - pillH / 2f,
-                pillX + pillW, pillY + pillH / 2f,
-                pillH, pillH, linePaint);
-        }
-
-        // ── Side: single chevron following finger ────────────────────────────
-        private void drawSideArrow(Canvas canvas, int w, int h, float p, boolean isLeft) {
-            float arrowY = Math.max(GestureConfig.dp(16f), Math.min(h - GestureConfig.dp(16f), fingerY));
-            float arrowSize = GestureConfig.dp(8f) * Math.min(1f, p * 1.5f);
-            float halfH = arrowSize * 0.55f;
-
-            float cx = isLeft ? w - GestureConfig.dp(1f) : GestureConfig.dp(1f);
-
-            linePaint.setColor(0xFFFFFF);
-            linePaint.setAlpha((int)(140 * p));
-            linePaint.setStrokeWidth(GestureConfig.dp(1.8f));
-
-            if (isLeft) {
-                canvas.drawLine(cx - arrowSize * 0.5f, arrowY - halfH,
-                               cx, arrowY, linePaint);
-                canvas.drawLine(cx, arrowY,
-                               cx - arrowSize * 0.5f, arrowY + halfH, linePaint);
-            } else {
-                canvas.drawLine(cx + arrowSize * 0.5f, arrowY - halfH,
-                               cx, arrowY, linePaint);
-                canvas.drawLine(cx, arrowY,
-                               cx + arrowSize * 0.5f, arrowY + halfH, linePaint);
-            }
-        }
+    private boolean isAccessibilityEnabledInSettings() {
+        String enabled = Settings.Secure.getString(getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        return enabled != null
+                && enabled.contains(GestureAccessibilityService.class.getName());
     }
 
     // ── Notification ─────────────────────────────────────────────────────────
+    private NotificationManager getNotificationManager() {
+        return (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+    }
+
     private Notification buildNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID, "Gesture Navigation", NotificationManager.IMPORTANCE_LOW);
             ch.setDescription("Edge gestures active");
             ch.setShowBadge(false);
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            NotificationManager nm = getNotificationManager();
             if (nm != null) nm.createNotificationChannel(ch);
         }
         Intent i = new Intent(this, MainActivity.class);
@@ -368,14 +187,29 @@ public class EdgeOverlayService extends Service {
                 .build();
     }
 
+    /** 手势中断提示：点击打开应用（进程拉起后系统会自动重绑无障碍服务） */
+    private Notification buildRecoveryNotification() {
+        Intent i = new Intent(this, MainActivity.class);
+        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, 1, i,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+        return new Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("手势服务已中断")
+                .setContentText("点击打开应用即可自动恢复手势")
+                .setSmallIcon(android.R.drawable.ic_menu_compass)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .build();
+    }
+
     @Override public IBinder onBind(Intent intent) { return null; }
 
     @Override
     public void onDestroy() {
+        watchdogHandler.removeCallbacks(watchdog);
         instance = null;
-        if (bottomOverlay != null) { wm.removeView(bottomOverlay); bottomOverlay = null; }
-        if (leftOverlay != null)   { wm.removeView(leftOverlay);   leftOverlay = null; }
-        if (rightOverlay != null)  { wm.removeView(rightOverlay);  rightOverlay = null; }
-        engine = null; super.onDestroy();
+        CrashLogger.log(this, "EdgeOverlayService destroyed");
+        super.onDestroy();
     }
 }

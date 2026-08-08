@@ -19,20 +19,21 @@ public class GestureEngine {
 
     public void back() {
         vibrate(12);
-        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
-        Log.d(TAG, "Back dispatched");
+        boolean ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
+        // 注意：本 ROM log.tag=I，Log.d 不可见，必须用 Log.i
+        Log.i(TAG, "Back dispatched, ok=" + ok);
     }
 
     public void home() {
         vibrate(16);
-        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME);
-        Log.d(TAG, "Home dispatched");
+        boolean ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME);
+        Log.i(TAG, "Home dispatched, ok=" + ok);
     }
 
     public void recents() {
         vibrate(20);
-        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS);
-        Log.d(TAG, "Recents dispatched");
+        boolean ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS);
+        Log.i(TAG, "Recents dispatched, ok=" + ok);
     }
 
     private void vibrate(long ms) {
