@@ -1,7 +1,7 @@
 ﻿# Self-contained build for GestureNav — PowerShell (bypasses build.bat issues)
 $ErrorActionPreference = 'Stop'
 
-$ROOT = 'C:\Users\Administrator\Documents\m3hu折腾项目\GestureNav'
+$ROOT = 'D:\旧电脑备份\m3hu折腾项目\GestureNav'
 $SDK  = 'C:\Users\Administrator\AppData\Local\Android\Sdk'
 $BT   = "$SDK\build-tools\34.0.0"
 $PLAT = "$SDK\platforms\android-30"
@@ -61,10 +61,12 @@ Write-Host "[6/7] zipalign"
 if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 
 Write-Host "[7/7] sign"
-if (-not (Test-Path "$BLD\debug.keystore")) {
+# 固定签名密钥位置（不在 buildtmp 内），避免每次构建都换签名导致无法 -r 覆盖安装
+$KEYSTORE = "$ROOT\debug.keystore"
+if (-not (Test-Path $KEYSTORE)) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "$JH\bin\keytool.exe"
-    $psi.Arguments = '-genkey -v -keystore "' + "$BLD\debug.keystore" + '" -alias debug -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Debug, OU=Dev, O=M3H, L=SZ, ST=GD, C=CN" -noprompt'
+    $psi.Arguments = '-genkey -v -keystore "' + $KEYSTORE + '" -alias debug -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Debug, OU=Dev, O=M3H, L=SZ, ST=GD, C=CN" -noprompt'
     $psi.UseShellExecute = $false
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
@@ -72,7 +74,7 @@ if (-not (Test-Path "$BLD\debug.keystore")) {
     $p.WaitForExit()
 }
 $ErrorActionPreference = 'Continue'
-& $APKSIGNER sign --ks "$BLD\debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$ROOT\GestureNav.apk" "$BLD\aligned.apk" 2>&1 | Out-Null
+& $APKSIGNER sign --ks $KEYSTORE --ks-pass pass:android --key-pass pass:android --out "$ROOT\GestureNav.apk" "$BLD\aligned.apk" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "apksigner failed" }
 
 Write-Host ""
